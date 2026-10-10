@@ -1,0 +1,5 @@
+cuenta_id,nombre,saldo,edad,tipo
+101,John Doe,5000,30,ahorro
+101,John Doe,5000,30,ahorro
+102,Jane Smith,8000,25
+103,Bob Johnson,12000,80,prestamo

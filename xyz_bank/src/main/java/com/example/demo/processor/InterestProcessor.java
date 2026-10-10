@@ -1,51 +1,95 @@
 package com.example.demo.processor;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.batch.core.listener.StepExecutionListener;
+import org.springframework.batch.core.step.StepExecution;
 import org.springframework.batch.infrastructure.item.ItemProcessor;
 import org.springframework.stereotype.Component;
+
 import com.example.demo.DTOs.AccountDTO;
+import com.example.demo.config.XyzBatchProperties;
+import com.example.demo.input.AccountInput;
+import com.example.demo.validation.DuplicateGuard;
+import com.example.demo.validation.ErrorCode;
+import com.example.demo.validation.InvalidRecordException;
+import com.example.demo.validation.RecordValidator;
 
 /**
- * Procesador de lógica de negocio para el cálculo y aplicación de tasas de interés.
- * Funciona como el componente de transformación en el pipeline ETL de Spring Batch, 
- * operando de forma individual sobre cada cuenta antes de que sea enviada al ItemWriter.
+ * Procesador de lógica de negocio para la validación de cuentas y el cálculo de intereses trimestrales.
+ * Cubre explícitamente los errores del dataset oficial (intereses_trimestrales.csv):
+ * <ul>
+ *   <li>Cuenta vacía, no numérica o no positiva: INVALID_ID</li>
+ *   <li>Titular vacío o "Unknown": INVALID_CLIENT_NAME</li>
+ *   <li>Saldo vacío, no numérico o negativo: MISSING_BALANCE / INVALID_BALANCE / NEGATIVE_BALANCE</li>
+ *   <li>Edad vacía, no numérica o fuera de [minAge, maxAge] (ej. 100, 150): MISSING_AGE / INVALID_AGE / AGE_OUT_OF_RANGE</li>
+ *   <li>Tipo de cuenta no elegible (ej. -1, unknown): INELIGIBLE_ACCOUNT_TYPE</li>
+ *   <li>Fila idéntica a otra ya aceptada: DUPLICATE_RECORD</li>
+ * </ul>
+ * Solo las cuentas válidas reciben el interés según su tipo y se persisten.
  */
 @Component
-public class InterestProcessor implements ItemProcessor<AccountDTO, AccountDTO>{
+public class InterestProcessor implements ItemProcessor<AccountInput, AccountDTO>, StepExecutionListener {
 
-    //Definiendo las tasas de interes
+    public static final String STEP_NAME = "interestStep";
 
-    private static final BigDecimal SAVINGS_RATE = new BigDecimal("0.005");// 0.5%
-    private static final BigDecimal LOAN_RATE = new BigDecimal("0.02"); //2.0%
-    private static final BigDecimal MORTAGE_RATE = new BigDecimal("0.03");//3.0% para Hipoteca, no esta en el instructivo pero si el csv
+    /** Tasas por tipo de cuenta. HIPOTECA no está en el instructivo pero sí en el dataset. */
+    private static final Map<String, BigDecimal> RATES = Map.of(
+            "AHORRO", new BigDecimal("0.005"),   // 0.5%
+            "PRESTAMO", new BigDecimal("0.02"),  // 2.0%
+            "HIPOTECA", new BigDecimal("0.03")); // 3.0%
 
-    @Override
-    public AccountDTO process(AccountDTO account) throws Exception {
-        if (account.getBalance() == null) {
-            return null; // Descarta la cuenta si no tiene saldo válido
-        }
+    private final int minAge;
+    private final int maxAge;
+    private final DuplicateGuard duplicateGuard = new DuplicateGuard();
 
-        BigDecimal currentBalance = account.getBalance();
-
-        //Asignacion de la tasa utilizando switch
-
-        BigDecimal interestRate = switch(account.getAccountType().toUpperCase()){
-            case "AHORRO" -> SAVINGS_RATE;
-            case "PRESTAMO" -> LOAN_RATE;
-            case "HIPOTECA" -> MORTAGE_RATE;
-            default -> BigDecimal.ZERO; //Otra cuenta por defecto
-        };
-
-        //Calculo de interes en caso de otra cuenta
-        if(interestRate.compareTo(BigDecimal.ZERO) > 0){
-            BigDecimal interest = currentBalance.multiply(interestRate);
-            account.setBalance(currentBalance.add(interest));
-        }
-
-        return account;
-
+    public InterestProcessor(XyzBatchProperties properties) {
+        this.minAge = properties.minAge();
+        this.maxAge = properties.maxAge();
     }
 
-    
-    
+    @Override
+    public void beforeStep(StepExecution stepExecution) {
+        duplicateGuard.reset();
+    }
+
+    @Override
+    public AccountDTO process(AccountInput item) {
+        RecordValidator validator = new RecordValidator();
+
+        AccountDTO account = new AccountDTO();
+        account.setAccountId(validator.positiveId(item.accountId()));
+
+        String clientName = item.clientName();
+        if (clientName.isEmpty() || clientName.equalsIgnoreCase("unknown")) {
+            validator.reject(ErrorCode.INVALID_CLIENT_NAME);
+        }
+        account.setClientName(clientName);
+
+        BigDecimal balance = validator.balance(item.balance());
+        account.setAge(validator.age(item.age(), minAge, maxAge));
+
+        String accountType = RecordValidator.normalizeCode(item.accountType());
+        BigDecimal rate = RATES.get(accountType);
+        if (rate == null) {
+            validator.reject(ErrorCode.INELIGIBLE_ACCOUNT_TYPE);
+        }
+        account.setAccountType(accountType);
+
+        validator.throwIfInvalid();
+
+        List<Object> key = List.of(account.getAccountId(), clientName.toUpperCase(), balance, account.getAge(), accountType);
+        if (duplicateGuard.isDuplicate(key, item)) {
+            throw new InvalidRecordException(List.of(ErrorCode.DUPLICATE_RECORD));
+        }
+
+        BigDecimal interest = balance.multiply(rate).setScale(2, RoundingMode.HALF_EVEN);
+        account.setInterest(interest);
+        account.setBalance(balance.add(interest));
+        return account;
+    }
+
 }

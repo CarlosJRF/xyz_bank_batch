@@ -1,25 +1,27 @@
 package com.example.demo.DTOs;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import lombok.Data;
+
 /**
- * Objeto de transferencia de datos (DTO) que modela las transacciones financieras 
- * procesadas por el sistema batch
+ * Objeto de transferencia de datos (DTO) que modela una transacción ya validada,
+ * lista para ser persistida en la tabla transaction_report.
  * Anotado con @Data de Lombok para automatizar getters, setters y otros métodos estándar
  */
 @Data
 public class TransactionDTO {
 
-    /** Identificador único de la transacción */
-    private int id;
+    /** Identificador de la transacción en el archivo de origen (único) */
+    private Integer id;
     
-    /** Fecha en que se llevó a cabo la transacción */
+    /** Fecha en que se llevó a cabo la transacción, normalizada a ISO */
     private LocalDate transactionDate;
     
-    /** Valor entero asociado al monto de la transacción */
-    private int amount;
+    /** Monto de la transacción, siempre positivo */
+    private BigDecimal amount;
     
-    /** Categoría o tipo de la transacción */
+    /** Categoría de la transacción: DEBITO o CREDITO */
     private String type;
 
 }

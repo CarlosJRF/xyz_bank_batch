@@ -3,46 +3,62 @@ package com.example.demo.policies;
 import org.springframework.batch.core.step.skip.SkipLimitExceededException;
 import org.springframework.batch.core.step.skip.SkipPolicy;
 import org.springframework.batch.infrastructure.item.file.FlatFileParseException;
-import org.springframework.stereotype.Component;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Component;
+
+import com.example.demo.config.XyzBatchProperties;
+import com.example.demo.validation.InvalidRecordException;
 
 /**
- * Componente que establece las políticas de resiliencia y tolerancia a fallos del sistema batch
- * Actúa como filtro para determinar qué excepciones justifican saltar un registro en lugar de abortar el Job
+ * Componente que establece las políticas de resiliencia y tolerancia a fallos del sistema batch.
+ * Distingue explícitamente entre:
+ * <ul>
+ *   <li><b>Errores de datos (omitibles)</b>: el registro se salta, se cuenta y queda en data_quality_log.
+ *     <ul>
+ *       <li>{@link InvalidRecordException}: validación de negocio de los procesadores
+ *           (montos, fechas, tipos, edades, saldos, duplicados...).</li>
+ *       <li>{@link FlatFileParseException}: línea con estructura incorrecta en el CSV.</li>
+ *       <li>{@link DataIntegrityViolationException}: restricción de la BD (defensa en profundidad,
+ *           p. ej. id de transacción repetido).</li>
+ *     </ul>
+ *   </li>
+ *   <li><b>Errores transitorios de BD</b>: se reintentan (configurado en el step), no se saltan.</li>
+ *   <li><b>Cualquier otro error</b> (bug, BD caída, archivo inexistente): NO se salta y el step falla,
+ *       para no ocultar fallos de infraestructura como si fueran datos malos.</li>
+ * </ul>
  */
 @Component
 public class CustomSkipPolicies implements SkipPolicy {
-    
-    /** 
-     * Umbral de errores permitidos. Aumentamos el límite a 1000 para soportar la alta corrupción de los CSV legacy 
-     */
-    private static final int MAX_SKIP_COUNT = 1000;
+
+    /** Umbral de rechazos permitidos por step; sobre este valor el step se aborta. */
+    private final int maxSkipCount;
+
+    public CustomSkipPolicies(XyzBatchProperties properties) {
+        this.maxSkipCount = properties.skipLimit();
+    }
 
     /**
      * Evalúa el tipo de excepción y el conteo de errores actuales para autorizar el salto de un registro
      * 
-     * @param t Excepción detectada en lectura, procesamiento o escritura[cite: 5].
-     * @param skipCount Cantidad de registros ya saltados durante la ejecución[cite: 5].
-     * @return true si la excepción está en la lista de errores tolerables, false en caso contrario
-     * @throws SkipLimitExceededException Si el número de errores excede el límite máximo configurado
+     * @param t Excepción detectada en lectura, procesamiento o escritura.
+     * @param skipCount Cantidad de registros ya saltados en el step.
+     * @return true si la excepción es un error de datos omitible y no se superó el límite.
+     * @throws SkipLimitExceededException Si un error omitible excede el límite configurado.
      */
     @Override
     public boolean shouldSkip(Throwable t, long skipCount) throws SkipLimitExceededException {
-        
-        if (skipCount >= MAX_SKIP_COUNT) {
-            throw new SkipLimitExceededException(MAX_SKIP_COUNT, t); 
+        if (!isDataError(t)) {
+            return false;
         }
+        if (skipCount >= maxSkipCount) {
+            throw new SkipLimitExceededException(maxSkipCount, t);
+        }
+        return true;
+    }
 
-        // Permitimos saltar errores de lectura, matemáticas y de conversión (BindException)
-        // Se incluyen también excepciones de persistencia en bloque y violaciones de integridad
-        if (t instanceof FlatFileParseException || 
-            t instanceof NumberFormatException || 
-            t instanceof org.springframework.validation.BindException ||
-            t instanceof DataIntegrityViolationException ||
-            t instanceof java.sql.BatchUpdateException) { 
-            return true; 
-        }
-        
-        return false; 
+    private static boolean isDataError(Throwable t) {
+        return t instanceof InvalidRecordException
+                || t instanceof FlatFileParseException
+                || t instanceof DataIntegrityViolationException;
     }
 }
