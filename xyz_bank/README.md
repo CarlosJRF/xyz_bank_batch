@@ -212,3 +212,16 @@ xyz.batch.max-age=99
 ./mvnw package -DskipTests && java -jar target/demo-0.0.1-SNAPSHOT.jar
 ./mvnw test   # unitarios de procesadores/política + integración (requiere PostgreSQL)
 ```
+
+### 5. Ejecutar con Docker (PostgreSQL incluido)
+Desde la raíz del repositorio (donde está `docker-compose.yaml`), sin instalar Java, Maven ni PostgreSQL:
+```bash
+cp .env.example .env                    # opcional: credenciales y memoria
+docker compose up -d --wait             # levanta solo PostgreSQL (base xyzbank)
+docker compose run --rm --build batch   # ejecuta masterJob una vez y termina con su estado
+docker compose exec postgres psql -U xyzbank -d xyzbank \
+  -c "SELECT step_name, action, error_code, COUNT(*) FROM data_quality_log GROUP BY 1,2,3 ORDER BY 1,2,4 DESC;"
+```
+El contenedor del batch usa las credenciales de `.env` (por defecto `xyzbank`/`xyzbank`) mediante
+`SPRING_DATASOURCE_*`; las de `application.properties` solo aplican a la ejecución local sin Docker.
+PostgreSQL no se publica al exterior. Cada `run` recarga las tablas (`xyz.batch.reset-tables=true`).
