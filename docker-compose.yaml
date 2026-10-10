@@ -1,0 +1,51 @@
+# Spring Batch (masterJob) with its own PostgreSQL.
+#
+#   cp .env.example .env                  # optional
+#   docker compose up -d --wait           # starts PostgreSQL only
+#   docker compose run --rm --build batch # runs masterJob once and exits with its status
+#
+# PostgreSQL is not published: inspect the results with
+#   docker compose exec postgres psql -U "$DB_USER" -d xyzbank
+
+name: xyz-bank-batch
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: xyzbank
+      POSTGRES_USER: ${DB_USER:-xyzbank}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-xyzbank}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d xyzbank"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  batch:
+    # One-shot job: only runs when requested (docker compose run batch).
+    profiles: ["batch"]
+    build: ./xyz_bank
+    image: xyz-bank-batch/batch
+    restart: "no"
+    mem_limit: ${SERVICE_MEM_LIMIT:-512m}
+    networks: [backend]
+    environment:
+      JAVA_OPTS: -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError
+      # Override the localhost PostgreSQL of application.properties.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/xyzbank
+      SPRING_DATASOURCE_USERNAME: ${DB_USER:-xyzbank}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-xyzbank}
+    depends_on:
+      postgres: { condition: service_healthy }
+
+networks:
+  backend:
+
+volumes:
+  postgres-data:

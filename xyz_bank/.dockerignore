@@ -1,0 +1,6 @@
+target/
+bin/
+.mvn/wrapper/maven-wrapper.jar
+benchmark/
+*.iml
+.idea/
